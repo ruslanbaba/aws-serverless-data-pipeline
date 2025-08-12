@@ -1,0 +1,104 @@
+{
+  "name": "aws-serverless-data-pipeline",
+  "version": "1.0.0",
+  "description": "Enterprise-grade serverless data pipeline for healthcare claims processing on AWS",
+  "main": "index.js",
+  "scripts": {
+    "deploy": "./scripts/deploy.sh",
+    "test": "./scripts/test-pipeline.sh",
+    "validate": "./scripts/deploy.sh --validate-only",
+    "setup": "./scripts/setup-dev-environment.sh",
+    "lint": "eslint . --ext .js,.ts",
+    "format": "prettier --write .",
+    "security-scan": "npm audit && safety check",
+    "docs": "npm run docs:generate && npm run docs:serve",
+    "docs:generate": "typedoc --out docs/api src/",
+    "docs:serve": "http-server docs/ -p 8080",
+    "clean": "rm -rf build/ dist/ node_modules/.cache/",
+    "precommit": "npm run lint && npm run test",
+    "prepare": "husky install"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/company/aws-serverless-data-pipeline.git"
+  },
+  "keywords": [
+    "aws",
+    "serverless",
+    "data-pipeline",
+    "healthcare",
+    "claims-processing",
+    "lambda",
+    "glue",
+    "s3",
+    "etl",
+    "analytics",
+    "enterprise",
+    "hipaa",
+    "cloudformation",
+    "infrastructure-as-code"
+  ],
+  "author": "Data Engineering Team",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/company/aws-serverless-data-pipeline/issues"
+  },
+  "homepage": "https://github.com/company/aws-serverless-data-pipeline#readme",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.50.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-security": "^1.7.1",
+    "husky": "^8.0.3",
+    "http-server": "^14.1.1",
+    "prettier": "^3.0.0",
+    "typedoc": "^0.25.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1400.0",
+    "@aws-sdk/client-cloudformation": "^3.400.0",
+    "@aws-sdk/client-lambda": "^3.400.0",
+    "@aws-sdk/client-s3": "^3.400.0",
+    "@aws-sdk/client-sns": "^3.400.0",
+    "@aws-sdk/client-glue": "^3.400.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "config": {
+    "environments": ["dev", "staging", "prod"],
+    "regions": ["us-east-1", "us-west-2"],
+    "defaultEnvironment": "dev",
+    "defaultRegion": "us-east-1"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "npm run precommit",
+      "pre-push": "npm run test"
+    }
+  },
+  "eslintConfig": {
+    "extends": [
+      "eslint:recommended",
+      "@typescript-eslint/recommended",
+      "prettier"
+    ],
+    "plugins": ["security"],
+    "rules": {
+      "security/detect-hardcoded-secrets": "error",
+      "no-console": "warn",
+      "@typescript-eslint/no-unused-vars": "error"
+    }
+  },
+  "prettier": {
+    "semi": true,
+    "trailingComma": "es5",
+    "singleQuote": true,
+    "printWidth": 80,
+    "tabWidth": 2
+  }
+}

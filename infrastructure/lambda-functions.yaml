@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lambda functions for healthcare claims processing pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  
+  ProjectName:
+    Type: String
+    Default: healthcare-claims-pipeline
+  
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing Lambda deployment packages
+
+Resources:
+  # Lambda Layer for common dependencies
+  CommonDependenciesLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${ProjectName}-${Environment}-common-dependencies'
+      Description: Common dependencies for Lambda functions
+      Content:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: layers/common-dependencies.zip
+      CompatibleRuntimes:
+        - python3.9
+        - python3.10
+        - python3.11
+
+  # S3 Event Trigger Lambda
+  S3EventTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-s3-event-trigger'
+      Description: Triggered by S3 events to initiate data processing
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-lambda-role'
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: functions/s3-event-trigger.zip
+      Layers:
+        - !Ref CommonDependenciesLayer
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-data-processing-topic'
+          ERROR_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+          GLUE_JOB_NAME: !Ref HealthcareClaimsETLJob
+          ENVIRONMENT: !Ref Environment
+      Timeout: 300
+      MemorySize: 512
+      ReservedConcurrencyLimit: 100
+
+  # Data Validation Lambda
+  DataValidationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-data-validation'
+      Description: Validates healthcare claims data before processing
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-lambda-role'
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: functions/data-validation.zip
+      Layers:
+        - !Ref CommonDependenciesLayer
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-data-processing-topic'
+          ERROR_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+          ENVIRONMENT: !Ref Environment
+      Timeout: 900
+      MemorySize: 1024
+
+  # Error Handler Lambda
+  ErrorHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-error-handler'
+      Description: Handles errors and sends notifications
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-lambda-role'
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: functions/error-handler.zip
+      Layers:
+        - !Ref CommonDependenciesLayer
+      Environment:
+        Variables:
+          ERROR_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+          ENVIRONMENT: !Ref Environment
+      Timeout: 300
+      MemorySize: 256
+
+  # Post-Processing Lambda
+  PostProcessingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-post-processing'
+      Description: Post-processing tasks after Glue job completion
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-lambda-role'
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: functions/post-processing.zip
+      Layers:
+        - !Ref CommonDependenciesLayer
+      Environment:
+        Variables:
+          PROCESSED_BUCKET: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-processed-data-bucket'
+          SNS_TOPIC_ARN: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-data-processing-topic'
+          ENVIRONMENT: !Ref Environment
+      Timeout: 900
+      MemorySize: 1024
+
+  # S3 Event Permission
+  S3InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref S3EventTriggerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 
+        - 'arn:aws:s3:::${BucketName}'
+        - BucketName: !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-data-bucket'
+
+  # SNS Invoke Permissions
+  SNSInvokePermissionValidation:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataValidationFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-data-processing-topic'
+
+  SNSInvokePermissionError:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ErrorHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+
+  # Glue Job
+  HealthcareClaimsETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-healthcare-claims-etl'
+      Description: ETL job for processing healthcare claims data
+      Role: !ImportValue 
+        Fn::Sub: '${ProjectName}-${Environment}-glue-role'
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${LambdaCodeBucket}/glue-scripts/healthcare_claims_etl.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--TempDir': !Sub 
+          - 's3://${BucketName}/temp/'
+          - BucketName: !ImportValue 
+              Fn::Sub: '${ProjectName}-${Environment}-data-bucket'
+        '--job-bookmark-option': 'job-bookmark-enable'
+        '--enable-metrics': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub 
+          - 's3://${BucketName}/spark-logs/'
+          - BucketName: !ImportValue 
+              Fn::Sub: '${ProjectName}-${Environment}-data-bucket'
+      MaxCapacity: 100
+      MaxRetries: 2
+      Timeout: 2880  # 48 hours
+      GlueVersion: '4.0'
+
+  # CloudWatch Alarms
+  S3TriggerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-s3-trigger-errors'
+      AlarmDescription: Alert when S3 trigger Lambda has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref S3EventTriggerFunction
+      AlarmActions:
+        - !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+
+  DataValidationErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-data-validation-errors'
+      AlarmDescription: Alert when data validation Lambda has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DataValidationFunction
+      AlarmActions:
+        - !ImportValue 
+            Fn::Sub: '${ProjectName}-${Environment}-error-notification-topic'
+
+Outputs:
+  S3EventTriggerFunctionArn:
+    Description: S3 Event Trigger Lambda Function ARN
+    Value: !GetAtt S3EventTriggerFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-s3-trigger-function'
+
+  DataValidationFunctionArn:
+    Description: Data Validation Lambda Function ARN
+    Value: !GetAtt DataValidationFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-data-validation-function'
+
+  GlueJobName:
+    Description: Glue ETL Job Name
+    Value: !Ref HealthcareClaimsETLJob
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-glue-job-name'

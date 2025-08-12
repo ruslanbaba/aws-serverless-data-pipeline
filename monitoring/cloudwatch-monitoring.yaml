@@ -1,0 +1,270 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch monitoring and alerting for healthcare claims pipeline'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  
+  ProjectName:
+    Type: String
+    Default: healthcare-claims-pipeline
+  
+  AlertEmail:
+    Type: String
+    Description: Email address for alerts
+
+Resources:
+  # CloudWatch Dashboard
+  PipelineDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-pipeline-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-${Environment}-s3-event-trigger"],
+                  [".", "Errors", ".", "."],
+                  [".", "Duration", ".", "."]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lambda Metrics - S3 Event Trigger",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/Glue", "glue.driver.aggregate.numCompletedTasks", "JobName", "${ProjectName}-${Environment}-healthcare-claims-etl"],
+                  [".", "glue.driver.aggregate.numFailedTasks", ".", "."],
+                  ["AWS/Glue", "glue.ALL.s3.filesystem.read_bytes", ".", "."],
+                  [".", "glue.ALL.s3.filesystem.write_bytes", ".", "."]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Glue Job Performance Metrics",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/S3", "BucketSizeBytes", "BucketName", "${ProjectName}-${Environment}-data", "StorageType", "StandardStorage"],
+                  [".", ".", ".", "${ProjectName}-${Environment}-processed-data", ".", "."]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "S3 Storage Metrics",
+                "period": 86400
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 12,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/glue/${ProjectName}-${Environment}'\n| fields @timestamp, @message\n| filter @message like /ERROR/\n| sort @timestamp desc\n| limit 100",
+                "region": "${AWS::Region}",
+                "title": "Recent Glue Errors",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+  # Custom Metrics for Pipeline Performance
+  ProcessingLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-processing-latency-high'
+      AlarmDescription: 'Alert when processing latency is high'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 240000  # 4 minutes
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub '${ProjectName}-${Environment}-s3-event-trigger'
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  DataProcessingVolumeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-processing-volume-low'
+      AlarmDescription: 'Alert when data processing volume is unusually low'
+      MetricName: Invocations
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 3600  # 1 hour
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub '${ProjectName}-${Environment}-s3-event-trigger'
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
+
+  GlueJobFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-glue-job-failures'
+      AlarmDescription: 'Alert when Glue jobs fail'
+      MetricName: glue.driver.aggregate.numFailedTasks
+      Namespace: AWS/Glue
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: JobName
+          Value: !Sub '${ProjectName}-${Environment}-healthcare-claims-etl'
+      AlarmActions:
+        - !Ref AlertTopic
+
+  S3ErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-s3-error-rate-high'
+      AlarmDescription: 'Alert when S3 error rate is high'
+      MetricName: 4xxErrors
+      Namespace: AWS/S3
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: BucketName
+          Value: !Sub '${ProjectName}-${Environment}-data'
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # Cost Optimization Alarms
+  CostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-daily-cost-high'
+      AlarmDescription: 'Alert when daily costs exceed threshold'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400  # 24 hours
+      EvaluationPeriods: 1
+      Threshold: 100  # $100 per day
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-monitoring-alerts'
+      DisplayName: 'Pipeline Monitoring Alerts'
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # CloudWatch Log Insights Queries (stored as parameter store values)
+  ErrorAnalysisQuery:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/${Environment}/monitoring/error-analysis-query'
+      Type: String
+      Value: |
+        fields @timestamp, @message, @requestId
+        | filter @message like /ERROR/
+        | stats count() by bin(5m)
+        | sort @timestamp desc
+
+  PerformanceAnalysisQuery:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${ProjectName}/${Environment}/monitoring/performance-analysis-query'
+      Type: String
+      Value: |
+        fields @timestamp, @duration, @billedDuration, @memorySize, @maxMemoryUsed
+        | filter @type = "REPORT"
+        | stats avg(@duration), max(@duration), min(@duration) by bin(5m)
+
+  # Custom Metric Filters
+  ErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-${Environment}'
+      FilterPattern: 'ERROR'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/${Environment}/Pipeline'
+          MetricName: ErrorCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  ProcessingTimeMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub '/aws/glue/${ProjectName}-${Environment}'
+      FilterPattern: '[timestamp, requestId, level="INFO", message="Processing complete*", duration]'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/${Environment}/Pipeline'
+          MetricName: ProcessingTimeSeconds
+          MetricValue: '$duration'
+
+  DataVolumeMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub '/aws/glue/${ProjectName}-${Environment}'
+      FilterPattern: '[timestamp, requestId, level="INFO", message="Processed*", records, unit="records"]'
+      MetricTransformations:
+        - MetricNamespace: !Sub '${ProjectName}/${Environment}/Pipeline'
+          MetricName: RecordsProcessed
+          MetricValue: '$records'
+
+Outputs:
+  DashboardURL:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}-pipeline-dashboard'
+
+  AlertTopicArn:
+    Description: SNS Topic ARN for alerts
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alert-topic'
