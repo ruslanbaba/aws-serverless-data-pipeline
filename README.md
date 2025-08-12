@@ -2,7 +2,7 @@
 
 ## Overview
 
-Enterprise-grade serverless data pipeline designed to process 500M+ healthcare claims monthly using AWS Glue, Lambda, and S3. Features event-driven workflows with SNS integration, achieving 40% reduction in processing latency and significant infrastructure cost savings.
+Enterprise-grade serverless data pipeline designed to process 500M+ healthcare claims monthly using AWS Glue, Lambda, and S3. Features event-driven workflows with SNS integration, and significant infrastructure cost savings.
 
 ## Architecture
 
@@ -82,7 +82,6 @@ aws-serverless-data-pipeline/
 ## Performance Metrics
 
 - **Throughput**: 500M+ claims/month
-- **Latency Reduction**: 40% improvement
 - **Cost Savings**: Significant annual infrastructure cost reduction
 - **Availability**: 99.9% uptime SLA
 - **Scalability**: Auto-scaling based on demand
